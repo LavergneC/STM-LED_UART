@@ -29,7 +29,7 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum {PARSE_STATUS_OK, PARSE_STATUS_ERR}parse_STATUS;
+typedef enum {PARSE_STATUS_OK, PARSE_STATUS_ERR}Parse_STATUS;
 
 typedef struct{
 	GPIO_PinState led14;
@@ -66,9 +66,9 @@ static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-parse_STATUS parseUARTrx(uint8_t rx[8]);
+Parse_STATUS parseUARTrx(uint8_t rx[8]);
 void emitBip(void);
-void afficherAide(void);
+void afficherEtatLEDs(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -115,19 +115,23 @@ int main(void)
 	
 	HAL_TIM_Base_Start_IT(&htim2);
 	HAL_UART_Receive_IT(&huart2,rxBuff,1);
-	
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+		/* Gestion du bouton qui toggle les deux leds*/
 		if(HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET){
 			HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_14);
 			HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
-	
+			
+			/* Mise à jour des variables qui tracks l'état des LEDs*/
 			etat_leds.led14 = (GPIO_PinState) !etat_leds.led14;
 			etat_leds.led15 = (GPIO_PinState) !etat_leds.led15;
+			
+			/*anti-ebonds du bouton*/
 			do{
 				HAL_Delay(200);
 			}while(HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET);
@@ -335,12 +339,16 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+	/* Le timer n°2 (3 secondes) permet de déclencher le timer 3 */
 	if(htim == &htim2){
-		afficherAide();
+		afficherEtatLEDs();
 		HAL_TIM_Base_Start_IT(&htim3);
+		
+		// A noter que le Timer 2 ne se relance pas lui même
 	}
+	/* Le timer n°3 (1 seconde) permet de déclencher l'affichage */
 	else if( htim == &htim3){
-			afficherAide();
+			afficherEtatLEDs();
 			HAL_TIM_Base_Start_IT(&htim3);
 	}
 }
@@ -349,22 +357,35 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	/* Prevent unused argument(s) compilation warning */
   UNUSED(huart);
 	
+	/* Cette fonction permet de recevoir les charactères reçus sur la liaison
+	 * série 1 par 1.
+	 * Les charatètres sont stockés dans la variable stacking.
+	*/
+	
 	uint8_t reset_index = 0;
 	static uint8_t stacking[10];
 	static char index = 0;
 	uint32_t* tim2_cnt = (uint32_t*) 0x40000024;
 	
+	
 	stacking[index] = rxBuff[0];
 	memset(rxBuff, 0xCC, 8);
 	
+	/* Ce if détecte la fin de la commande */
 	if(stacking[index] == 'N' || stacking[index-1] == 'F' || index >= 8){
-		if(parseUARTrx(stacking) == PARSE_STATUS_ERR){
+		Parse_STATUS parse_status = parseUARTrx(stacking);
+		if(parse_status == PARSE_STATUS_ERR){
 			emitBip();
 		}
-		/* Reset du compteur du timer */ 
+		
+		/* Reset du compteur du timer 2 */ 
 		*tim2_cnt = 0x00;
-		HAL_TIM_Base_Start_IT(&htim2);
+		
+		// Comme une commande a été détéctée, on arrête d'affiche l'état des LEDs
 		HAL_TIM_Base_Stop_IT(&htim3);
+		
+		// On redémare alors le timer 2 au cas ou il a été stoppé
+		HAL_TIM_Base_Start_IT(&htim2);
 		
 		reset_index = 1;
 		memset(stacking, 0xDD, 10);
@@ -377,12 +398,23 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	HAL_UART_Receive_IT(&huart2,rxBuff,1);
 }
 
-parse_STATUS parseUARTrx(uint8_t rx[10]){
+/**
+  * @brief Cette fontion permet d'analyser le commande et
+	*				d'effectuer les actions sur les LEDs
+	* @param rx : la commande à analyser
+	* @retval Parse_STATUS : 
+	*								PARSE_STATUS_ERR : Si la commande reçu n'était pas valide
+	*								PARSE_STATUS_OK : Si la commande reçu était valide
+  */
+Parse_STATUS parseUARTrx(uint8_t rx[10]){
 	uint16_t led;
 	GPIO_PinState etat;
+	
+	/* if sur les parties constantes des commande valides */
 	if(rx[0] == 'L' && rx[1] == 'E' && rx[2] == 'D' && rx[3] == ' ' &&
 		 rx[5] == ' ' && rx[6] == 'O')
 	{
+		/* vérification sur les parie variable (LED et état) */
 		switch(rx[4]){
 			case '1':
 				led = GPIO_PIN_14;
@@ -403,7 +435,9 @@ parse_STATUS parseUARTrx(uint8_t rx[10]){
 			default :
 				return PARSE_STATUS_ERR; 
 		}
+		
 		HAL_GPIO_WritePin(GPIOD, led, etat);
+		/* Mise à jour de la structure de tracking de l'état des LEDs */
 		if(led == GPIO_PIN_14)
 			etat_leds.led14 = etat;
 		else
@@ -414,12 +448,22 @@ parse_STATUS parseUARTrx(uint8_t rx[10]){
 		return PARSE_STATUS_ERR;
 }
 
+/**
+  * @brief Fonction pour emettre un son sur les écouteurs
+  * @param None
+  * @retval None
+  */
 void emitBip(){
 	HAL_UART_Transmit(&huart2, (uint8_t*) "BIP\r\n", 6, 10);
 }
 
-void afficherAide(){
-	HAL_UART_Transmit(&huart2, (uint8_t*) "Commandes : \n", 14, 10);
+/**
+  * @brief Fonciton qui affiche l'état des LEDs sur la liaison série
+  * @param None
+  * @retval None
+  */
+void afficherEtatLEDs(){
+	HAL_UART_Transmit(&huart2, (uint8_t*) "Etat LEDs : \n", 14, 10);
 	HAL_UART_Transmit(&huart2, (uint8_t*) "LED 1 > O", 10, 10);
 	if(etat_leds.led14 == GPIO_PIN_SET)
 		HAL_UART_Transmit(&huart2, (uint8_t*) "N\n\r", 4, 10);
@@ -445,7 +489,10 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-
+	while(1){
+		HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_14);
+		HAL_Delay(400);
+	}
   /* USER CODE END Error_Handler_Debug */
 }
 
