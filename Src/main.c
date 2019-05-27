@@ -372,7 +372,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	memset(rxBuff, 0xCC, 8);
 	
 	/* Ce if détecte la fin de la commande */
-	if(stacking[index] == 'N' || stacking[index-1] == 'F' || index >= 8){
+	if(stacking[index] == '\n' || index >= 9){
 		Parse_STATUS parse_status = parseUARTrx(stacking);
 		if(parse_status == PARSE_STATUS_ERR){
 			emitBip();
